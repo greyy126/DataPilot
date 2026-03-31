@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 venv/
 data_collector.db
+storage/uploads/*
+!storage/uploads/.gitkeep
