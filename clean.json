@@ -1,0 +1,13 @@
+{
+  "file_id": "16851247-7484-497e-9d61-4891f01d3384",
+  "actions": [
+    {
+      "action": "rename_column",
+      "column": "Cust ID",
+      "new_name": "cust_id"
+    },
+    {
+      "action": "remove_duplicates"
+    }
+  ]
+}

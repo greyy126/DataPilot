@@ -5,8 +5,26 @@ from fastapi import UploadFile
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 UPLOAD_DIR = BACKEND_DIR / "storage" / "uploads"
+CLEANED_DIR = BACKEND_DIR / "storage" / "cleaned"
 
 ALLOWED_EXTENSIONS = frozenset({".csv", ".xlsx"})
+
+
+def get_upload_path_by_file_id(file_id: str) -> Path:
+    """
+    Resolve an uploaded file by id (stem). Tries .csv then .xlsx on disk.
+
+    Raises:
+        FileNotFoundError: No matching file under storage/uploads/.
+    """
+    fid = (file_id or "").strip()
+    if not fid or ".." in fid or "/" in fid or "\\" in fid:
+        raise FileNotFoundError("Invalid file id.")
+    for ext in (".csv", ".xlsx"):
+        p = UPLOAD_DIR / f"{fid}{ext}"
+        if p.is_file():
+            return p
+    raise FileNotFoundError(f"No uploaded file found for id: {file_id}")
 
 
 def generate_file_id() -> str:

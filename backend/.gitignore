@@ -5,3 +5,5 @@ venv/
 data_collector.db
 storage/uploads/*
 !storage/uploads/.gitkeep
+storage/cleaned/*
+!storage/cleaned/.gitkeep
