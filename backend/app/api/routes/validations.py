@@ -1,18 +1,17 @@
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.models.schemas.suggestions import SuggestionsResponse
-from app.services import profiling_service, validation_service
-from app.services.suggestion_engine import generate_suggestions
+from app.models.schemas.validation import ValidationResponse
+from app.services import validation_service
 from app.utils import file_handler
 
 router = APIRouter()
 
 
-@router.get("/suggestions", response_model=SuggestionsResponse)
-async def get_suggestions(
+@router.get("/validations", response_model=ValidationResponse)
+async def get_validations(
     file_id: str = Query(..., description="Upload id returned from POST /upload"),
-) -> SuggestionsResponse:
+) -> ValidationResponse:
     try:
         path = file_handler.get_upload_path_by_file_id(file_id)
     except FileNotFoundError as e:
@@ -22,8 +21,7 @@ async def get_suggestions(
         ) from e
 
     try:
-        profile = profiling_service.profile_dataset(path)
-        validation_data = validation_service.validate_dataset(path)
+        data = validation_service.validate_dataset(path)
     except FileNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -37,8 +35,7 @@ async def get_suggestions(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Could not load file for suggestions: {e!s}",
+            detail=f"Could not validate file: {e!s}",
         ) from e
 
-    items = generate_suggestions(profile, validation_findings=validation_data.get("findings"))
-    return SuggestionsResponse(file_id=file_id.strip(), suggestions=items)
+    return ValidationResponse(file_id=file_id.strip(), **data)

@@ -22,6 +22,7 @@ export type UploadResponse = {
 export type ProfileResponse = {
   file_id: string;
   file_path: string;
+  total_row_count: number;
   columns: string[];
   dtypes: Record<string, string>;
   null_count: Record<string, number>;
@@ -29,6 +30,56 @@ export type ProfileResponse = {
   unique_count: Record<string, number>;
   duplicate_row_count: number;
   sample_rows: Record<string, unknown>[];
+};
+
+export type ValidationRecommendation = {
+  action:
+    | "fill_missing"
+    | "drop_rows"
+    | "drop_column"
+    | "clip_to_range"
+    | "review"
+    | "remove_duplicates";
+  reason: string;
+  fill_value?: unknown;
+  fill_strategy?: string;
+};
+
+export type ValidationFinding = {
+  rule_type: "null_check" | "range_check" | "type_check";
+  severity: "info" | "warning" | "error";
+  column: string;
+  issue_type?:
+    | "negative_values"
+    | "extreme_values"
+    | "domain_check"
+    | "type_mismatch"
+    | "category_mapping"
+    | "duplicate_key"
+    | "invalid_date"
+    | null;
+  issue_count: number;
+  issue_percentage: number;
+  affected_row_indices: number[];
+  sample_row_indices: number[];
+  range_value_type?: "numeric" | "date" | null;
+  expected_min?: unknown;
+  expected_max?: unknown;
+  expected_range?: string | null;
+  sample_values: unknown[];
+  groups: Array<{
+    canonical: string;
+    variants: string[];
+    count?: number | null;
+  }>;
+  message: string;
+  recommendations: ValidationRecommendation[];
+};
+
+export type ValidationResponse = {
+  file_id: string;
+  message?: string | null;
+  findings: ValidationFinding[];
 };
 
 function errorMessageFromBody(data: unknown): string {
@@ -98,10 +149,44 @@ export async function getProfile(fileId: string): Promise<ProfileResponse> {
   return res.json() as Promise<ProfileResponse>;
 }
 
+/**
+ * GET /validations?file_id=…
+ */
+export async function getValidations(
+  fileId: string
+): Promise<ValidationResponse> {
+  const root = requireBaseUrl();
+  const url = new URL(`${root}/validations`);
+  url.searchParams.set("file_id", fileId);
+
+  const res = await fetch(url.toString());
+
+  if (!res.ok) {
+    let msg = res.statusText || "Failed to load validations";
+    try {
+      msg = errorMessageFromBody(await res.json());
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+
+  return res.json() as Promise<ValidationResponse>;
+}
+
 export type SuggestionItem = {
   action: string;
   column: string;
   reason: string;
+  groups?: Array<{
+    canonical: string;
+    variants: string[];
+    count: number;
+  }>;
+  mapping_groups?: Array<{
+    from: string[];
+    to: string;
+  }>;
 };
 
 export type SuggestionsResponse = {
@@ -144,13 +229,18 @@ export type CleanResponse = {
  */
 export async function postClean(
   fileId: string,
-  actions: Record<string, unknown>[]
+  actions: Record<string, unknown>[],
+  selectedColumns?: string[]
 ): Promise<CleanResponse> {
   const root = requireBaseUrl();
   const res = await fetch(`${root}/clean`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_id: fileId, actions }),
+    body: JSON.stringify({
+      file_id: fileId,
+      actions,
+      selected_columns: selectedColumns,
+    }),
   });
 
   if (!res.ok) {

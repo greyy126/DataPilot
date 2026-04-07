@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class ProfileResponse(BaseModel):
     file_id: str
     file_path: str = Field(..., description="Path relative to backend root.")
+    total_row_count: int
     columns: list[str]
     dtypes: dict[str, str] = Field(..., description="Inferred pandas dtypes per column.")
     null_count: dict[str, int]

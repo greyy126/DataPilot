@@ -6,9 +6,11 @@ from fastapi import FastAPI
 from app.db.base import Base
 from app.db.session import engine
 from app.api.routes import clean as clean_routes
+from app.api.routes import download as download_routes
 from app.api.routes import profile as profile_routes
 from app.api.routes import suggestions as suggestions_routes
 from app.api.routes import upload as upload_routes
+from app.api.routes import validations as validations_routes
 from app.models.schemas import HealthResponse
 
 
@@ -40,6 +42,8 @@ app.include_router(upload_routes.router, tags=["upload"])
 app.include_router(profile_routes.router, tags=["profile"])
 app.include_router(suggestions_routes.router, tags=["suggestions"])
 app.include_router(clean_routes.router, tags=["clean"])
+app.include_router(download_routes.router, tags=["download"])
+app.include_router(validations_routes.router, tags=["validations"])
 
 
 @app.get("/health", response_model=HealthResponse)

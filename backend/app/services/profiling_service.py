@@ -22,6 +22,18 @@ def _resolve_path(file_path: str | Path) -> Path:
     return path.resolve()
 
 
+def _is_id_like_column(column: str) -> bool:
+    return "id" in column.lower()
+
+
+def _profile_duplicate_row_count(df: pd.DataFrame) -> int:
+    id_like_columns = [str(col) for col in df.columns if _is_id_like_column(str(col))]
+    if id_like_columns:
+        key_column = id_like_columns[0]
+        return int(df.duplicated(subset=[key_column]).sum())
+    return int(df.duplicated().sum())
+
+
 def profile_dataset(file_path: str | Path) -> dict:
     """
     Build a deterministic profile for a CSV or Excel file.
@@ -50,7 +62,7 @@ def profile_dataset(file_path: str | Path) -> dict:
     unique_count_series = df.nunique(dropna=False)
     unique_count = {str(k): int(v) for k, v in unique_count_series.items()}
 
-    duplicate_row_count = int(df.duplicated().sum())
+    duplicate_row_count = _profile_duplicate_row_count(df)
 
     sample_rows = _sample_rows_jsonable(df.head(5))
 
@@ -60,6 +72,7 @@ def profile_dataset(file_path: str | Path) -> dict:
         rel_path = path
     return {
         "file_path": rel_path.as_posix(),
+        "total_row_count": n,
         "columns": columns,
         "dtypes": dtypes,
         "null_count": null_count,

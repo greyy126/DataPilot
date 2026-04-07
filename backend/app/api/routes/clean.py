@@ -19,7 +19,11 @@ async def clean_dataset(req: CleanRequest) -> CleanResponse:
         ) from e
 
     try:
-        cleaned_id, rel_path = cleaning_service.clean_dataset(path, req.actions)
+        cleaned_id, rel_path = cleaning_service.clean_dataset(
+            path,
+            req.actions,
+            selected_columns=req.selected_columns,
+        )
     except FileNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

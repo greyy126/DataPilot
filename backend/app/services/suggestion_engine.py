@@ -26,17 +26,25 @@ _ACTION_ORDER = {
     "standardize_date": 5,
     "convert_to_date": 6,
     "normalize_case": 7,
+    "standardize_values": 8,
 }
 
 # (strptime pattern, stable label for "which format matched")
 _DATE_PARSE_FORMATS: tuple[tuple[str, str], ...] = (
+    ("%Y-%m-%d", "Y-m-d"),
+    ("%Y/%m/%d", "Y/m/d"),
     ("%d-%m-%Y", "d-m-Y"),
     ("%m/%d/%Y", "m/d/Y"),
+    ("%m-%d-%Y", "m-d-Y"),
+    ("%d/%m/%Y", "d/m/Y"),
     ("%b %d %Y", "b d Y"),
+    ("%B %d %Y", "B d Y"),
 )
 
 
-def generate_suggestions(profile: dict[str, Any]) -> list[dict[str, str]]:
+def generate_suggestions(
+    profile: dict[str, Any], validation_findings: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """
     Build suggestions from profiling output (same shape as `profile_dataset` returns).
 
@@ -44,11 +52,21 @@ def generate_suggestions(profile: dict[str, Any]) -> list[dict[str, str]]:
     """
     columns = profile.get("columns") or []
     dtypes = profile.get("dtypes") or {}
+    null_count = profile.get("null_count") or {}
     null_pct = profile.get("null_percentage") or {}
     dup_count = int(profile.get("duplicate_row_count") or 0)
     sample_rows = profile.get("sample_rows") or []
 
-    suggestions: list[dict[str, str]] = []
+    suggestions: list[dict[str, Any]] = []
+    invalid_date_columns = {
+        str(finding.get("column") or "")
+        for finding in (validation_findings or [])
+        if finding.get("issue_type") == "invalid_date"
+    }
+    has_duplicate_key_finding = any(
+        finding.get("issue_type") == "duplicate_key"
+        for finding in (validation_findings or [])
+    )
 
     for col in columns:
         if " " in col:
@@ -63,18 +81,15 @@ def generate_suggestions(profile: dict[str, Any]) -> list[dict[str, str]]:
     for col in columns:
         if _is_string_dtype(dtypes.get(col, "")):
             if _sample_has_leading_trailing_spaces(sample_rows, col):
-                reason = "Column contains leading/trailing spaces"
-            else:
-                reason = "String column; trim leading/trailing whitespace"
-            suggestions.append(
-                {
-                    "action": "trim_whitespace",
-                    "column": col,
-                    "reason": reason,
-                }
-            )
+                suggestions.append(
+                    {
+                        "action": "trim_whitespace",
+                        "column": col,
+                        "reason": "Column contains leading/trailing spaces",
+                    }
+                )
 
-    if dup_count > 0:
+    if dup_count > 0 and not has_duplicate_key_finding:
         suggestions.append(
             {
                 "action": "remove_duplicates",
@@ -84,13 +99,18 @@ def generate_suggestions(profile: dict[str, Any]) -> list[dict[str, str]]:
         )
 
     for col in columns:
-        if float(null_pct.get(col, 0)) > 10.0:
-            p = float(null_pct[col])
+        count = int(null_count.get(col, 0) or 0)
+        if count > 0:
+            p = float(null_pct.get(col, 0) or 0.0)
             suggestions.append(
                 {
                     "action": "fill_missing",
                     "column": col,
-                    "reason": f"Null percentage ({p:.1f}%) exceeds 10%",
+                    "reason": (
+                        f"Column contains {count} missing value(s)"
+                        if p <= 0
+                        else f"Column contains {count} missing value(s) ({p:.1f}% of rows)"
+                    ),
                 }
             )
 
@@ -115,7 +135,11 @@ def generate_suggestions(profile: dict[str, Any]) -> list[dict[str, str]]:
                     "reason": "Multiple date formats detected",
                 }
             )
-        elif _looks_like_dates_in_sample(sample_rows, col):
+        elif (
+            col not in invalid_date_columns
+            and _looks_like_dates_in_sample(sample_rows, col)
+            and not _is_iso_date_column_in_sample(sample_rows, col)
+        ):
             suggestions.append(
                 {
                     "action": "convert_to_date",
@@ -124,7 +148,62 @@ def generate_suggestions(profile: dict[str, Any]) -> list[dict[str, str]]:
                 }
             )
 
+    standardized_value_columns: set[str] = set()
+    for finding in validation_findings or []:
+        if finding.get("rule_type") == "null_check":
+            column = str(finding.get("column") or "")
+            if column:
+                suggestions.append(
+                    {
+                        "action": "fill_missing",
+                        "column": column,
+                        "reason": finding.get("message") or "Missing values detected",
+                    }
+                )
+            continue
+        if finding.get("issue_type") == "invalid_date":
+            continue
+        if finding.get("issue_type") == "duplicate_key":
+            column = str(finding.get("column") or "")
+            if column:
+                suggestions.append(
+                    {
+                        "action": "remove_duplicates",
+                        "column": column,
+                        "reason": finding.get("message") or "Repeated key values detected",
+                    }
+                )
+            continue
+        if finding.get("issue_type") != "category_mapping":
+            continue
+        column = str(finding.get("column") or "")
+        groups = finding.get("groups") or []
+        if not column or not groups:
+            continue
+        mapping_groups = [
+            {
+                "from": group.get("variants") or [],
+                "to": group.get("canonical"),
+            }
+            for group in groups
+            if group.get("canonical") and group.get("variants")
+        ]
+        if not mapping_groups:
+            continue
+        standardized_value_columns.add(column)
+        suggestions.append(
+            {
+                "action": "standardize_values",
+                "column": column,
+                "reason": "Inconsistent categorical values detected",
+                "groups": groups,
+                "mapping_groups": mapping_groups,
+            }
+        )
+
     for col in columns:
+        if col in standardized_value_columns:
+            continue
         if _is_string_dtype(dtypes.get(col, "")) and _has_inconsistent_casing_in_sample(sample_rows, col):
             suggestions.append(
                 {
@@ -134,8 +213,17 @@ def generate_suggestions(profile: dict[str, Any]) -> list[dict[str, str]]:
                 }
             )
 
-    suggestions.sort(key=lambda s: (_ACTION_ORDER.get(s["action"], 99), s["column"]))
-    return suggestions
+    deduped_suggestions: list[dict[str, Any]] = []
+    seen = set()
+    for suggestion in suggestions:
+        key = (suggestion["action"], suggestion["column"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_suggestions.append(suggestion)
+
+    deduped_suggestions.sort(key=lambda s: (_ACTION_ORDER.get(s["action"], 99), s["column"]))
+    return deduped_suggestions
 
 
 def _is_string_dtype(dtype_str: str) -> bool:
@@ -256,6 +344,13 @@ def _has_inconsistent_date_formats_in_sample(
     if parseable / total < 0.6:
         return False
     return len(labels) > 1
+
+
+def _is_iso_date_column_in_sample(sample_rows: list[dict[str, Any]], col: str) -> bool:
+    values = _non_empty_string_values_in_sample(sample_rows, col)
+    if not values:
+        return False
+    return all(detect_date_format(value) == "Y-m-d" for value in values)
 
 
 def _looks_like_dates_in_sample(sample_rows: list[dict[str, Any]], col: str) -> bool:
