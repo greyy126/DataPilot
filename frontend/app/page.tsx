@@ -78,6 +78,36 @@ function isNullLikeCell(value: unknown): boolean {
   return false;
 }
 
+function loadingStateCopy(args: {
+  isUploading: boolean;
+  profileLoading: boolean;
+  validationsLoading: boolean;
+  suggestionsLoading: boolean;
+}): { title: string; detail: string } {
+  if (args.isUploading) {
+    return {
+      title: "Uploading file",
+      detail: "Please wait while your dataset uploads and the workspace prepares your results.",
+    };
+  }
+  if (args.profileLoading) {
+    return {
+      title: "Building dataset profile",
+      detail: "Please wait while row counts, columns, and sample data are being analyzed.",
+    };
+  }
+  if (args.validationsLoading) {
+    return {
+      title: "Running validation checks",
+      detail: "Please wait while missing values, duplicates, dates, and type issues are reviewed.",
+    };
+  }
+  return {
+    title: "Preparing cleaning suggestions",
+    detail: "Please wait while recommended fixes are generated for the uploaded dataset.",
+  };
+}
+
 async function getNullRowsByColumnFromFile(
   file: File
 ): Promise<{
@@ -260,7 +290,6 @@ export default function HomePage() {
       setNullRowsByColumn(parsedFileData.nullRowsByColumn);
       setRowValuesByColumn(parsedFileData.rowValuesByColumn);
       setUploadStatus("idle");
-      setActiveSection("preview");
 
       let loadedProfile: ProfileResponse | null = null;
       setProfileLoading(true);
@@ -268,6 +297,7 @@ export default function HomePage() {
         const p = await getProfile(data.file_id);
         loadedProfile = p;
         setProfile(p);
+        setActiveSection("preview");
         setColumnKeepSelections(
           Object.fromEntries(p.columns.map((column) => [column, true]))
         );
@@ -953,6 +983,24 @@ export default function HomePage() {
     { id: "validation", label: "Validation" },
     { id: "cleaning", label: "Cleaning" },
   ];
+  const availableSections = new Set<WorkspaceSection>(["upload"]);
+  if (profile) {
+    availableSections.add("preview");
+    availableSections.add("profiling");
+    availableSections.add("columns");
+  }
+  if (profile && !validationsLoading && !validationsError) {
+    availableSections.add("validation");
+  }
+  if (
+    profile &&
+    !validationsLoading &&
+    !validationsError &&
+    !suggestionsLoading &&
+    !suggestionsError
+  ) {
+    availableSections.add("cleaning");
+  }
   const selectedColumns = profile
     ? profile.columns.filter((column) => columnKeepSelections[column] ?? true)
     : [];
@@ -989,18 +1037,19 @@ export default function HomePage() {
       )
   );
   const gaugeSegments = 24;
+  const currentLoadingState = loadingStateCopy({
+    isUploading,
+    profileLoading,
+    validationsLoading,
+    suggestionsLoading,
+  });
   const { healthScore, issuesDetected } = useMemo(() => {
-    const warnings = filteredValidations.filter(
-      (finding) => finding.severity === "warning"
-    ).length;
-    const errors = filteredValidations.filter(
-      (finding) => finding.severity === "error"
-    ).length;
-    const totalIssues = Math.min(warnings + errors, 100);
+    const totalFindings = filteredValidations.length;
+    const totalIssues = Math.min(totalFindings, 100);
 
     return {
       healthScore: profile ? 100 - totalIssues : 0,
-      issuesDetected: profile ? totalIssues : 0,
+      issuesDetected: profile ? totalFindings : 0,
     };
   }, [profile, filteredValidations]);
   const filledGaugeSegments = Math.round((healthScore / 100) * gaugeSegments);
@@ -1435,7 +1484,7 @@ export default function HomePage() {
           <div className="sidebar-title">Workspace</div>
           <nav className="sidebar-nav" aria-label="Workspace sections">
             {workspaceSections.map((section) => {
-              const disabled = !profile && section.id !== "upload";
+              const disabled = !availableSections.has(section.id);
               return (
                 <button
                   key={section.id}
@@ -1491,15 +1540,21 @@ export default function HomePage() {
 
           {(isUploading || profileLoading || validationsLoading || suggestionsLoading) && (
             <div className="tile loading-tile">
-              <p className="loading-inline" aria-live="polite">
-                {isUploading
-                  ? "Uploading file…"
-                  : profileLoading
-                    ? "Loading dataset profile…"
-                    : validationsLoading
-                      ? "Loading validation findings…"
-                      : "Loading cleaning suggestions…"}
-              </p>
+              <div className="loading-status" aria-live="polite">
+                <div className="loading-status-copy">
+                  <strong className="loading-title">{currentLoadingState.title}…</strong>
+                  <p className="loading-inline">{currentLoadingState.detail}</p>
+                </div>
+                <div
+                  className="loading-progress"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuetext={currentLoadingState.title}
+                >
+                  <span className="loading-progress-bar" />
+                </div>
+              </div>
             </div>
           )}
 
@@ -1669,11 +1724,18 @@ export default function HomePage() {
                     return (
                       <div key={column} className="key-value-row">
                         <div className="null-column-name">
-                          <span>{column}</span>
-                          {nullRows.length > 0 && nullCount > 0 && (
-                            <span className="row-info">
-                              (Rows: {nullRows.join(", ")})
-                            </span>
+                          <span className="null-column-label">{column}</span>
+                          {nullRows.length > 0 && nullCount > 8 && (
+                            <details className="row-info-details">
+                              <summary>View all rows</summary>
+                              <div className="row-chip-list">
+                                {nullRows.map((rowNumber) => (
+                                  <span key={`${column}-${rowNumber}`} className="row-chip compact">
+                                    {rowNumber}
+                                  </span>
+                                ))}
+                              </div>
+                            </details>
                           )}
                         </div>
                         <strong className="count">{nullCount}</strong>
