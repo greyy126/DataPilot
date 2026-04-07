@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Datapilot",
+  title: "DataPilot",
   description: "Clean and prepare CSV and Excel files",
   icons: {
     icon: "/favicon-datapilot.png",

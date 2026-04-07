@@ -2,7 +2,6 @@
 
 import { type ReactElement, useMemo, useState } from "react";
 import Image from "next/image";
-import * as XLSX from "xlsx";
 import HowItHelpsTimeline from "@/components/HowItHelpsTimeline";
 import {
   getProfile,
@@ -62,22 +61,6 @@ function formatCell(value: unknown): string {
   return String(value);
 }
 
-function isNullLikeCell(value: unknown): boolean {
-  if (value === null || value === undefined) return true;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    return (
-      normalized === "" ||
-      normalized === "na" ||
-      normalized === "n/a" ||
-      normalized === "null" ||
-      normalized === "none" ||
-      normalized === "nan"
-    );
-  }
-  return false;
-}
-
 function loadingStateCopy(args: {
   isUploading: boolean;
   profileLoading: boolean;
@@ -108,71 +91,10 @@ function loadingStateCopy(args: {
   };
 }
 
-async function getNullRowsByColumnFromFile(
-  file: File
-): Promise<{
-  nullRowsByColumn: Record<string, number[]>;
-  rowValuesByColumn: Record<string, Record<number, string>>;
-}> {
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: "array" });
-  const firstSheetName = workbook.SheetNames[0];
-
-  if (!firstSheetName) {
-    return { nullRowsByColumn: {}, rowValuesByColumn: {} };
-  }
-
-  const sheet = workbook.Sheets[firstSheetName];
-  const rows = XLSX.utils.sheet_to_json<(string | number | boolean | null)[]>(sheet, {
-    header: 1,
-    defval: null,
-    raw: false,
-  });
-
-  if (rows.length === 0) {
-    return { nullRowsByColumn: {}, rowValuesByColumn: {} };
-  }
-
-  const headers = (rows[0] ?? []).map((cell, index) => {
-    const text = String(cell ?? "").trim();
-    return text || `Column ${index + 1}`;
-  });
-
-  const nullRowsByColumn = Object.fromEntries(
-    headers.map((header) => [header, [] as number[]])
-  ) as Record<string, number[]>;
-  const rowValuesByColumn = Object.fromEntries(
-    headers.map((header) => [header, {} as Record<number, string>])
-  ) as Record<string, Record<number, string>>;
-
-  for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
-    const row = rows[rowIndex] ?? [];
-    const worksheetRowNumber = rowIndex + 1;
-
-    headers.forEach((header, columnIndex) => {
-      const cellValue = row[columnIndex];
-      rowValuesByColumn[header][worksheetRowNumber] =
-        cellValue === null || cellValue === undefined || String(cellValue).trim() === ""
-          ? "null"
-          : String(cellValue);
-
-      if (isNullLikeCell(cellValue)) {
-        nullRowsByColumn[header].push(worksheetRowNumber);
-      }
-    });
-  }
-
-  return { nullRowsByColumn, rowValuesByColumn };
-}
-
 export default function HomePage() {
   const [fileId, setFileId] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
-  const [nullRowsByColumn, setNullRowsByColumn] = useState<Record<string, number[]>>({});
-  const [rowValuesByColumn, setRowValuesByColumn] = useState<
-    Record<string, Record<number, string>>
-  >({});
   const [uploadStatus, setUploadStatus] = useState<
     "idle" | "uploading" | "error"
   >("idle");
@@ -216,8 +138,6 @@ export default function HomePage() {
     setFileId(null);
     setFileName(null);
     setProfile(null);
-    setNullRowsByColumn({});
-    setRowValuesByColumn({});
     setProfileError(null);
     setProfileLoading(false);
     setValidationsLoading(false);
@@ -283,12 +203,9 @@ export default function HomePage() {
     setUploadStatus("uploading");
 
     try {
-      const parsedFileData = await getNullRowsByColumnFromFile(selectedFile);
       const data = await uploadFile(selectedFile);
       setFileId(data.file_id);
       setFileName(selectedFile.name);
-      setNullRowsByColumn(parsedFileData.nullRowsByColumn);
-      setRowValuesByColumn(parsedFileData.rowValuesByColumn);
       setUploadStatus("idle");
 
       let loadedProfile: ProfileResponse | null = null;
@@ -713,50 +630,6 @@ export default function HomePage() {
     return rowsValue.trim() ? rowsValue : "No rows selected";
   }
 
-  function rowValuePairs(column: string, rows: number[]): string[] {
-    const values = rowValuesByColumn[column] ?? {};
-    return rows.map((row) => `${row} → ${values[row] ?? "unknown"}`);
-  }
-
-  function duplicateFindingForColumn(column: string): ValidationFinding | undefined {
-    return validations.find(
-      (finding) => finding.issue_type === "duplicate_key" && finding.column === column
-    );
-  }
-
-  function duplicateResolutionSummary(
-    column: string
-  ): { keepRows: number[]; removeRows: number[]; sampleKeys: string[] } | null {
-    const finding = duplicateFindingForColumn(column);
-    if (!finding) {
-      return null;
-    }
-
-    const values = rowValuesByColumn[column] ?? {};
-    const rowsByValue = new Map<string, number[]>();
-    finding.affected_row_indices.forEach((row) => {
-      const key = values[row] ?? "unknown";
-      const existing = rowsByValue.get(key) ?? [];
-      existing.push(row);
-      rowsByValue.set(key, existing);
-    });
-
-    const keepRows: number[] = [];
-    const removeRows: number[] = [];
-    rowsByValue.forEach((rows) => {
-      const sortedRows = [...rows].sort((a, b) => a - b);
-      if (sortedRows.length === 0) return;
-      keepRows.push(sortedRows[0]);
-      removeRows.push(...sortedRows.slice(1));
-    });
-
-    return {
-      keepRows: keepRows.sort((a, b) => a - b),
-      removeRows: removeRows.sort((a, b) => a - b),
-      sampleKeys: finding.sample_values.map((value) => String(value)),
-    };
-  }
-
   function mergedValidationRows(
     entries: Array<{ finding: ValidationFinding; index: number }>
   ): number[] {
@@ -1098,7 +971,6 @@ export default function HomePage() {
     const replacementValue =
       typeMismatchReplacementValues[group.column] ?? "";
     const summaryRowValue = group.affectedRows.join(", ");
-    const summaryDropRowPairs = rowValuePairs(group.column, group.affectedRows);
     const rowValue =
       typeMismatchRowSelections[group.column] ?? summaryRowValue;
 
@@ -1132,9 +1004,6 @@ export default function HomePage() {
             <p className="action-card-meta action-card-rows">
               Rows to drop: {displayDropRowsSummary(summaryRowValue)}
             </p>
-            {summaryDropRowPairs.length > 0 && (
-              <p className="action-card-meta">Values by row: {summaryDropRowPairs.join(", ")}</p>
-            )}
           </>
         )}
         <div className="action-card-controls">
@@ -1197,7 +1066,6 @@ export default function HomePage() {
       ) ?? group.action;
     const summaryRows = group.affectedRows;
     const summaryRowValue = summaryRows.join(", ");
-    const summaryDropRowPairs = rowValuePairs(group.column, summaryRows);
     const rowValue =
       validationRowSelections[group.entries[0].index] ?? summaryRowValue;
 
@@ -1235,9 +1103,6 @@ export default function HomePage() {
             <p className="action-card-meta action-card-rows">
               Rows to drop: {displayDropRowsSummary(summaryRowValue)}
             </p>
-            {summaryDropRowPairs.length > 0 && (
-              <p className="action-card-meta">Values by row: {summaryDropRowPairs.join(", ")}</p>
-            )}
           </>
         )}
         <div className="action-card-controls">
@@ -1287,10 +1152,6 @@ export default function HomePage() {
   filteredSuggestions.forEach((s) => {
     const i = suggestions.indexOf(s);
     const validation = validationForColumn(validations, s.column);
-    const duplicateSummary =
-      s.action === "remove_duplicates" && s.column !== "*"
-        ? duplicateResolutionSummary(s.column)
-        : null;
     const strategyOptions = supportedStrategies(s, validation);
     const selectedStrategy =
       normalizeStrategy(suggestionStrategies[i]) ??
@@ -1307,7 +1168,6 @@ export default function HomePage() {
         ? validation.affected_row_indices
         : [];
     const summaryRowValue = summaryRows.join(", ");
-    const summaryDropRowPairs = rowValuePairs(s.column, summaryRows);
 
     pushCleaningItem(
       s.column,
@@ -1341,21 +1201,6 @@ export default function HomePage() {
           </p>
         )}
 
-        {s.action === "remove_duplicates" && duplicateSummary && (
-          <p className="action-card-meta">
-            Keep rows: {displayDropRowsSummary(duplicateSummary.keepRows.join(", "))} · Remove rows:{" "}
-            {displayDropRowsSummary(duplicateSummary.removeRows.join(", "))}
-          </p>
-        )}
-
-        {s.action === "remove_duplicates" &&
-          duplicateSummary &&
-          duplicateSummary.sampleKeys.length > 0 && (
-            <p className="action-card-meta">
-              Duplicate values: {duplicateSummary.sampleKeys.join(", ")}
-            </p>
-          )}
-
         {s.action === "standardize_values" &&
           s.groups &&
           s.groups.length > 0 && (
@@ -1388,9 +1233,6 @@ export default function HomePage() {
             <p className="action-card-meta action-card-rows">
               Rows to drop: {displayDropRowsSummary(summaryRowValue)}
             </p>
-            {summaryDropRowPairs.length > 0 && (
-              <p className="action-card-meta">Values by row: {summaryDropRowPairs.join(", ")}</p>
-            )}
           </>
         )}
 
@@ -1718,25 +1560,12 @@ export default function HomePage() {
                 </div>
                 <div className="key-value-grid">
                   {profile.columns.map((column) => {
-                    const nullRows = nullRowsByColumn[column] ?? [];
                     const nullCount = profile.null_count[column] ?? 0;
 
                     return (
                       <div key={column} className="key-value-row">
                         <div className="null-column-name">
                           <span className="null-column-label">{column}</span>
-                          {nullRows.length > 0 && nullCount > 8 && (
-                            <details className="row-info-details">
-                              <summary>View all rows</summary>
-                              <div className="row-chip-list">
-                                {nullRows.map((rowNumber) => (
-                                  <span key={`${column}-${rowNumber}`} className="row-chip compact">
-                                    {rowNumber}
-                                  </span>
-                                ))}
-                              </div>
-                            </details>
-                          )}
                         </div>
                         <strong className="count">{nullCount}</strong>
                       </div>

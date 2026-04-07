@@ -1,6 +1,6 @@
-# Data Collector
+# DataPilot
 
-Data Collector is a deterministic data profiling, validation, and cleaning tool for CSV and Excel datasets. It provides a guided upload-to-download workflow for identifying common data quality issues, reviewing suggested fixes, and exporting a cleaned file.
+DataPilot is a deterministic data profiling, validation, and cleaning tool for CSV and Excel datasets. It provides a guided upload-to-download workflow for identifying common data quality issues, reviewing suggested fixes, and exporting a cleaned file.
 
 ## Tech Stack
 
@@ -37,6 +37,7 @@ Data Collector is a deterministic data profiling, validation, and cleaning tool 
 
 ### 1. Upload and Preview
 - Upload `.csv` and `.xlsx` files
+- Show staged loading states during upload, profiling, validation, and suggestion generation
 - Preview sample rows from the uploaded dataset
 - Track uploaded files by generated `file_id`
 
@@ -243,4 +244,5 @@ Backend:
 
 - The system is deterministic and rule-based.
 - It does not use ML or fuzzy matching libraries.
+- The frontend no longer parses full null-row maps in the browser; dataset profiling and validation details come from the API responses.
 - The current focus is practical data cleaning for structured business datasets.

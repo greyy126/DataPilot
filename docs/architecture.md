@@ -1,6 +1,6 @@
-# Data Collector — System Architecture
+# DataPilot — System Architecture
 
-MVP: rule-based cleaning only. Local files + SQLite. No external APIs, no background queues, no authentication.
+Current implementation: rule-based cleaning only. Local files + SQLite. No external APIs, no background queues, no authentication.
 
 ---
 
@@ -8,160 +8,136 @@ MVP: rule-based cleaning only. Local files + SQLite. No external APIs, no backgr
 
 ### Frontend ↔ backend
 
-- The **Next.js** app talks to **FastAPI** over **HTTP** (same machine in dev; reverse proxy or direct URL in production).
-- JSON is used for metadata (profile, suggestions, workflow records). **File upload** uses `multipart/form-data`; **download** uses file responses or signed paths returned by the API.
-- No server-to-server calls outside this pair.
+- The **Next.js** frontend talks to the **FastAPI** backend over **HTTP**.
+- JSON is used for metadata responses such as profile, validations, suggestions, and cleaning results.
+- File upload uses `multipart/form-data`.
+- Download uses a file response from the backend.
+- No external network services are involved in the core flow.
 
 ### Backend processing
 
-- FastAPI receives uploads, writes files under **`storage/`**, loads them with **Pandas** for profile, suggestions, and cleaning.
-- All transforms run **in the request** (synchronous): load → compute → write result → return. No job queue.
+- FastAPI receives uploads and writes them under **`backend/storage/`**.
+- The backend loads datasets with **Pandas** for profiling, validation, suggestions, and cleaning.
+- All work runs synchronously in request handlers: load → compute → return or write output.
 
 ### Where files live
 
-| Path (example) | Purpose |
-|----------------|---------|
-| `storage/uploads/{session_or_id}/` | Original uploaded CSV/Excel |
-| `storage/cleaned/{session_or_id}/` | Exported cleaned CSV after apply |
+| Path | Purpose |
+|------|---------|
+| `backend/storage/uploads/{file_id}.{ext}` | Original uploaded CSV/Excel file |
+| `backend/storage/cleaned/{cleaned_id}.csv` | Exported cleaned CSV |
 
-Paths are **local filesystem only**; the API returns identifiers so the client can request profile/suggestions/clean/download without passing raw paths from the browser.
+Paths are local filesystem paths only. The frontend works with file identifiers and API responses rather than raw file paths from the browser.
 
 ### SQLite usage
 
-- **Workflows**: name, optional description, ordered list of approved rule steps (JSON), link to source file id / timestamps.
-- **Session or file registry** (minimal): map `file_id` → stored path, format, created time—so APIs stay stateless aside from DB + disk.
+- SQLite is initialized locally for app data.
+- The current cleaning workflow is primarily file-based.
+- Workflow save/load is described in older planning docs but is not wired into the current frontend flow.
 
-### Data flow (step-by-step)
+### Data flow
 
-1. **Upload** — Client sends file → API saves to `storage/uploads/…`, creates DB row → returns `file_id`.
-2. **Profile** — Client requests profile for `file_id` → API loads DataFrame → **profiling_service** computes stats → JSON response.
-3. **Suggestions** — Client requests suggestions for `file_id` → **suggestion_engine** reads profile (+ optional column samples) → returns list of proposed rules (no apply).
-4. **Approve** — User selects rules in UI; client sends **approved rule definitions** (or indices referencing server-side rule catalog) with `file_id`.
-5. **Clean** — **cleaning_service** loads file, applies approved rules with Pandas, writes `storage/cleaned/…` → returns `cleaned_file_id` or download URL path token.
-6. **Export** — Client requests download for cleaned artifact by id.
-7. **Save workflow** — Client POSTs workflow payload (rules + metadata) → **workflow_service** persists to SQLite.
+1. **Upload**: Client sends file → API saves it under `backend/storage/uploads/` → returns `file_id`.
+2. **Profile**: Client requests profile for `file_id` → `profiling_service` computes row counts, null counts, duplicate counts, dtypes, and sample rows.
+3. **Validate**: Client requests validations for `file_id` → `validation_service` computes deterministic findings.
+4. **Suggest**: Client requests suggestions for `file_id` → `suggestion_engine` uses profile + validation output to produce cleaning suggestions.
+5. **Approve**: User selects strategies and actions in the frontend.
+6. **Clean**: Client posts approved actions + selected columns → `cleaning_service` applies the pipeline and writes a cleaned CSV.
+7. **Download**: Client requests the cleaned file by id.
+
+### Frontend loading and navigation flow
+
+- The app uses a **single-page workspace** with sections for upload, preview, profiling, columns, validation, and cleaning.
+- Section access is progressively unlocked:
+  - `Preview`, `Profiling`, and `Columns` unlock after profile data loads
+  - `Validation` unlocks after validation findings load
+  - `Cleaning` unlocks after suggestions load
+- The UI shows staged loading states for:
+  - uploading file
+  - building dataset profile
+  - running validation checks
+  - preparing cleaning suggestions
+- The frontend no longer parses full spreadsheet null-row maps in the browser; it relies on backend responses for dataset metadata.
 
 ---
 
-## 2. Backend architecture (modules)
+## 2. Backend architecture
 
-```
+```text
 backend/
-  api/           # Route handlers only: parse, validate, call services, return responses
-  services/      # profiling_service, suggestion_engine, cleaning_service, workflow_service
-  models/        # Pydantic schemas (requests/responses), domain types for rules/workflows
-  db/            # SQLite connection, migrations or init script, repository helpers
-  utils/         # File helpers, safe paths, CSV/Excel load wrappers
+  app/
+    api/routes/   # Thin route handlers
+    services/     # profiling_service, validation_service, suggestion_engine, cleaning_service
+    models/       # Pydantic request/response schemas
+    db/           # SQLite session/bootstrap
+    utils/        # File handling and path helpers
+    main.py       # FastAPI app entry
+  requirements.txt
+  storage/
+    uploads/
+    cleaned/
 ```
 
-- **`api/`** — Thin HTTP layer; no business logic beyond validation.
-- **`services/profiling_service`** — Nulls, duplicates, dtypes, uniques, simple summaries.
-- **`services/suggestion_engine`** — Rule-based proposals from profiling output only.
-- **`services/cleaning_service`** — Applies approved rules to a DataFrame and writes CSV.
-- **`services/workflow_service`** — CRUD for saved workflows in SQLite.
-- **File handling** — Upload validation (extension, size), save under `storage/`, delete/replace policy as needed for MVP.
+### Core backend services
+
+| Service | Responsibility |
+|---------|----------------|
+| `profiling_service` | Compute row count, column list, dtypes, null counts, null percentages, unique counts, duplicate counts, and sample rows. |
+| `validation_service` | Compute deterministic findings for nulls, numeric issues, type mismatches, invalid dates, duplicate keys, and category mappings. |
+| `suggestion_engine` | Turn profile/validation results into deterministic cleaning suggestions. |
+| `cleaning_service` | Apply approved actions in order and write the cleaned CSV. |
 
 ---
 
 ## 3. Frontend architecture
 
-Simple, functional UI—no design system requirement.
+```text
+frontend/
+  app/            # Next.js App Router
+  components/     # Shared UI pieces
+  services/       # API client wrappers
+  public/
+```
+
+### Frontend responsibilities
 
 | Area | Role |
 |------|------|
-| **Upload page** | Form: choose CSV/XLSX → POST upload → store `file_id` (React state or URL query). |
-| **Dataset preview** | Table component: first N rows from API or embedded preview endpoint. |
-| **Profiling summary** | Cards or list: nulls, dupes, types, key uniques—driven by profile JSON. |
-| **Suggestions panel** | List of suggested rules with **approve/reject** toggles; “Apply selected” sends approved set to clean endpoint. |
-| **Download** | Button: GET export endpoint with `cleaned_file_id` (or blob response). |
-| **Workflow save** | Optional form: name + save current approved rule list via workflow API. |
-
-```
-frontend/
-  app/ or pages/     # Next.js routes: upload, dataset/[fileId], etc.
-  components/        # UploadForm, DataPreviewTable, ProfileSummary, SuggestionsPanel, etc.
-  services/          # api client: fetch wrappers for FastAPI base URL
-```
+| Upload section | Choose CSV/XLSX and start the workflow |
+| Loading state | Show staged progress messaging during upload and backend processing |
+| Preview section | Show sample rows from profile response |
+| Profiling section | Show row/column metrics, duplicate counts, null counts, and null percentages |
+| Columns section | Let the user keep/drop columns before cleaning |
+| Validation section | Show grouped findings with row-level detail and severity |
+| Cleaning section | Let the user approve strategies and submit cleaning actions |
+| Download section | Download the cleaned CSV |
 
 ---
 
-## 4. Proposed folder structure
-
-```
-data-collector/
-  docs/
-    product_spec.md
-    architecture.md
-  frontend/
-    app/                 # or pages/ if Pages Router
-    components/
-    services/
-    public/
-    package.json
-    tsconfig.json
-    next.config.js
-  backend/
-    api/
-    services/
-    models/
-    db/
-    utils/
-    main.py              # FastAPI app entry, mount routers
-    requirements.txt
-  storage/
-    uploads/
-    cleaned/
-  README.md
-```
-
-- **`storage/`** — Gitignored; created at runtime. Only local disk.
-- **`docs/`** — Product and architecture docs.
-
----
-
-## 5. Key backend services
-
-| Service | Responsibility |
-|---------|------------------|
-| **`profiling_service`** | Load dataset from path, compute null counts per column, duplicate row count, dtypes, basic unique stats / cardinality signals needed for rules. Returns a structured profile object. |
-| **`suggestion_engine`** | Input: profile (and fixed rule catalog). Output: list of **rule proposals** (e.g. “drop duplicate rows”, “fill nulls in column X with …”) with parameters. **Deterministic**: same profile → same suggestions. No learning. |
-| **`cleaning_service`** | Input: `file_id`, ordered list of **approved** rule objects. Load DataFrame, apply each step with Pandas, validate, write cleaned CSV to `storage/cleaned/`, register in DB if needed. |
-| **`workflow_service`** | Save/load/list/delete workflows in SQLite: metadata + serialized rule list for reuse or audit. |
-
----
-
-## 6. API routes (minimal)
+## 4. Current API routes
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/files/upload` | Multipart upload → save file, return `file_id` |
-| `GET` | `/api/files/{file_id}/profile` | Run profiling → profile JSON |
-| `GET` | `/api/files/{file_id}/suggestions` | Rule-based suggestions JSON |
-| `POST` | `/api/files/{file_id}/clean` | Body: approved rules → apply cleaning → return `cleaned_file_id` (and/or path token) |
-| `GET` | `/api/files/cleaned/{cleaned_file_id}/download` | Stream cleaned CSV |
-| `POST` | `/api/workflows` | Save workflow (metadata + rules) |
-| `GET` | `/api/workflows` | List workflows |
-| `GET` | `/api/workflows/{workflow_id}` | Get one workflow |
-
-Optional for preview without loading huge tables client-side:
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/api/files/{file_id}/preview?limit=…` | First N rows as JSON |
-
-Naming can be shortened (e.g. `/upload`, `/profile/{id}`) as long as the responsibilities stay the same.
+| `POST` | `/upload` | Save uploaded file and return `file_id` |
+| `GET` | `/profile` | Return profile data for `file_id` |
+| `GET` | `/validations` | Return validation findings for `file_id` |
+| `GET` | `/suggestions` | Return deterministic cleaning suggestions for `file_id` |
+| `POST` | `/clean` | Apply approved actions and selected columns |
+| `GET` | `/download` | Download cleaned CSV by file id |
+| `GET` | `/health` | Simple backend health check |
 
 ---
 
-## 7. Constraints (strict)
+## 5. Constraints
 
 | Constraint | Approach |
 |------------|----------|
-| No LLM / AI | Suggestions only from **suggestion_engine** rules + profiling. |
-| No external APIs | FastAPI only; no HTTP clients to third parties for core flow. |
-| No background jobs | All work in request handlers. |
-| No authentication | Single-user local assumption; no auth middleware. |
-| No cloud storage | `storage/` on disk only. |
+| No LLM / AI | Suggestions come from deterministic rules only |
+| No external APIs | FastAPI + local filesystem only |
+| No background jobs | Work happens inside request handlers |
+| No authentication | Single-user local workflow |
+| No cloud storage | Files stay in `backend/storage/` |
+| Large-file UX | Frontend avoids full null-row parsing in-browser and uses staged loading feedback |
 
 ---
 
