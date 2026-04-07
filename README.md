@@ -2,6 +2,32 @@
 
 DataPilot is a deterministic data profiling, validation, and cleaning tool for CSV and Excel datasets. It provides a guided upload-to-download workflow for identifying common data quality issues, reviewing suggested fixes, and exporting a cleaned file.
 
+## Whoever is here to run it locally:
+
+### Backend
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend:
+- `http://localhost:3000`
+
+Backend:
+- `http://127.0.0.1:8000`
+
 ## Tech Stack
 
 ### Frontend
